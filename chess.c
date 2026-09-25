@@ -21,9 +21,11 @@
 #include <unistd.h>
 #include <wchar.h>
 
-/* macOS uses a socket option on systems without the Linux send flag. */
-#ifndef MSG_NOSIGNAL
-#define MSG_NOSIGNAL 0
+/* Use macOS's socket option even when newer SDKs define the Linux send flag. */
+#ifdef SO_NOSIGPIPE
+#define SEND_FLAGS 0
+#else
+#define SEND_FLAGS MSG_NOSIGNAL
 #endif
 
 enum { PAWN = 1, KNIGHT, BISHOP, ROOK, QUEEN, KING };
@@ -451,7 +453,7 @@ static int send_packet(UI *ui, int type, int from, int to, int promotion)
 static int flush_packets(UI *ui)
 {
     while (net.queued && net.fd >= 0) {
-        ssize_t sent = send(net.fd, net.output, net.queued, MSG_NOSIGNAL);
+        ssize_t sent = send(net.fd, net.output, net.queued, SEND_FLAGS);
         if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return 1;
         if (sent <= 0) { disconnected(ui, "Friend disconnected."); return 0; }
         net.queued -= (size_t)sent;
