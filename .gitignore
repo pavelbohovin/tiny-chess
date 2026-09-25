@@ -1,0 +1,6 @@
+/tiny-chess
+/dist/
+/core
+/core.*
+/.agents/
+/.codex/
