@@ -91,7 +91,7 @@ static void launch(Peer *p, int hosting)
         setenv("LC_ALL", "C", 1); setenv("NO_COLOR", "1", 1);
         const char *binary = getenv("TINY_CHESS_TEST_BINARY");
         if (!binary) binary = "./tiny-chess";
-        if (hosting) execl(binary, "tiny-chess", "--ascii", "--host", port, (char *)NULL);
+        if (hosting) execl(binary, "tiny-chess", "--ascii", "--no-clipboard", "--host", port, (char *)NULL);
         else execl(binary, "tiny-chess", "--ascii", "--join", "127.0.0.1", port, (char *)NULL);
         _exit(127);
     }

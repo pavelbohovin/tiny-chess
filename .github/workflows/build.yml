@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       published:
-        description: Also test the published v1.1.0 installer and executable
+        description: Also test the published v1.2.0 installer and executable
         type: boolean
         default: false
 
@@ -62,6 +62,6 @@ jobs:
         if: inputs.published
         run: |
           export TINY_CHESS_INSTALL_DIR="$RUNNER_TEMP/tiny-chess-installed"
-          sh -c "$(curl -fsSL https://raw.githubusercontent.com/pavelbohovin/tiny-chess/v1.1.0/install.sh)" -- --install-only
+          sh -c "$(curl -fsSL https://raw.githubusercontent.com/pavelbohovin/tiny-chess/v1.2.0/install.sh)" -- --install-only
           export TINY_CHESS_TEST_BINARY="$TINY_CHESS_INSTALL_DIR/tiny-chess"
           make test

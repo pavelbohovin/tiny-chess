@@ -30,6 +30,7 @@ cat > "$work/assets/tiny-chess-linux-aarch64" <<'MOCK'
 #!/bin/sh
 set -eu
 if [ "${1:-}" = --help ]; then exit 0; fi
+if [ "${1:-}" = --version ]; then echo 'tiny-chess 1.2.0'; exit 0; fi
 printf '%s\n' "$@" > "$TEST_WORK/arguments"
 if [ "${TEST_READ_STDIN:-0}" = 1 ]; then
     IFS= read -r input
@@ -59,6 +60,14 @@ if TEST_EXIT=7 sh "$project/install.sh" --join host 5555; then exit 1; else test
 TEST_FAIL_DOWNLOAD=1 sh "$project/install.sh" --install-only > "$work/install-path"
 test "$(cat "$work/install-path")" = "$TINY_CHESS_INSTALL_DIR/tiny-chess"
 echo 'Install, reuse, arguments, stdin, exit status: PASS'
+# Older releases did not understand --version; replace only after a verified download.
+printf '#!/bin/sh\nexit 1\n' > "$TINY_CHESS_INSTALL_DIR/tiny-chess"
+if TEST_FAIL_DOWNLOAD=1 sh "$project/install.sh" --install-only; then exit 1; fi
+test -x "$TINY_CHESS_INSTALL_DIR/tiny-chess"
+if "$TINY_CHESS_INSTALL_DIR/tiny-chess" --version; then exit 1; fi
+sh "$project/install.sh" --install-only
+test "$("$TINY_CHESS_INSTALL_DIR/tiny-chess" --version)" = 'tiny-chess 1.2.0'
+echo 'Upgrade old release; failed upgrade preserves existing executable: PASS'
 TINY_CHESS_INSTALL_DIR="$work/x86" TEST_ARCH=x86_64 sh "$project/install.sh" --install-only
 TINY_CHESS_INSTALL_DIR="$work/arm" TEST_ARCH=arm64 sh "$project/install.sh" --install-only
 TINY_CHESS_INSTALL_DIR="$work/mac" TEST_OS=Darwin TEST_ARCH=arm64 sh "$project/install.sh" --install-only

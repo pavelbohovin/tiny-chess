@@ -1,13 +1,17 @@
 #ifdef __APPLE__
 #define _DARWIN_C_SOURCE
 #endif
+#define _DEFAULT_SOURCE
 #define _XOPEN_SOURCE 700
+#include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
 #include <langinfo.h>
 #include <locale.h>
 #include <netdb.h>
+#include <net/if.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdint.h>
@@ -16,10 +20,13 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
 #include <wchar.h>
+
+#define VERSION "1.2.0"
 
 /* Use macOS's socket option even when newer SDKs define the Linux send flag. */
 #ifdef SO_NOSIGPIPE
@@ -365,6 +372,112 @@ static void network_close(void)
     if (net.fd >= 0) close(net.fd);
     if (net.listener >= 0) close(net.listener);
     net.fd = net.listener = -1;
+}
+
+static int share_host_valid(const char *host)
+{
+    return *host && *host != '-' && strlen(host) <= 253 &&
+           strspn(host, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_") == strlen(host);
+}
+
+static int host_address(char address[INET_ADDRSTRLEN])
+{
+    /* UDP connect only asks the routing table; no packet is sent. */
+    struct sockaddr_in route = { .sin_family = AF_INET, .sin_port = htons(53) };
+    inet_pton(AF_INET, "1.1.1.1", &route.sin_addr);
+    int fd = socket(AF_INET, SOCK_DGRAM, 0), found = 0;
+    socklen_t length = sizeof route;
+    if (fd >= 0) {
+        if (!connect(fd, (struct sockaddr *)&route, sizeof route) &&
+            !getsockname(fd, (struct sockaddr *)&route, &length) &&
+            route.sin_addr.s_addr && (ntohl(route.sin_addr.s_addr) >> 24) != 127)
+            found = inet_ntop(AF_INET, &route.sin_addr, address, INET_ADDRSTRLEN) != NULL;
+        close(fd);
+    }
+    if (found) return 1;
+    /* A LAN can still work without a default route or internet access. */
+    struct ifaddrs *interfaces;
+    if (getifaddrs(&interfaces)) return 0;
+    for (struct ifaddrs *p = interfaces; p; p = p->ifa_next) {
+        if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET ||
+            !(p->ifa_flags & IFF_UP) || (p->ifa_flags & IFF_LOOPBACK)) continue;
+        struct in_addr ip = ((struct sockaddr_in *)p->ifa_addr)->sin_addr;
+        if (ip.s_addr && (ntohl(ip.s_addr) >> 24) != 127 &&
+            inet_ntop(AF_INET, &ip, address, INET_ADDRSTRLEN)) { found = 1; break; }
+    }
+    freeifaddrs(interfaces);
+    return found;
+}
+
+static int clipboard_run(char *const args[], const char *text)
+{
+    int input[2], status;
+    size_t length = strlen(text);
+    /* Less than POSIX's minimum pipe capacity: fill before forking, no SIGPIPE. */
+    if (length >= 512 || pipe(input)) return 0;
+    ssize_t written;
+    do { written = write(input[1], text, length); } while (written < 0 && errno == EINTR);
+    close(input[1]);
+    if (written != (ssize_t)length) { close(input[0]); return 0; }
+    pid_t child = fork();
+    if (!child) {
+        network_close(); /* Clipboard owners must not keep the listening port open. */
+        if (dup2(input[0], STDIN_FILENO) < 0) _exit(127);
+        if (input[0] != STDIN_FILENO) close(input[0]);
+        int sink = open("/dev/null", O_WRONLY);
+        if (sink < 0 || dup2(sink, STDOUT_FILENO) < 0 || dup2(sink, STDERR_FILENO) < 0)
+            _exit(127);
+        if (sink > STDERR_FILENO) close(sink);
+        execvp(args[0], args);
+        _exit(127);
+    }
+    close(input[0]);
+    if (child < 0) return 0;
+    for (int tries = 0; tries < 100; ++tries) {
+        pid_t result = waitpid(child, &status, WNOHANG);
+        if (result == child) return WIFEXITED(status) && !WEXITSTATUS(status);
+        if (result < 0 && errno != EINTR) return 0;
+        poll(NULL, 0, 20);
+    }
+    kill(child, SIGKILL);
+    while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+    return 0;
+}
+
+static int clipboard_copy(const char *text)
+{
+#ifdef __APPLE__
+    char *args[] = { "pbcopy", NULL };
+    return clipboard_run(args, text);
+#else
+    char *wayland[] = { "wl-copy", "--type", "text/plain;charset=utf-8", NULL };
+    char *xclip[] = { "xclip", "-selection", "clipboard", NULL };
+    char *xsel[] = { "xsel", "--clipboard", "--input", NULL };
+    if (getenv("WAYLAND_DISPLAY") && clipboard_run(wayland, text)) return 1;
+    return getenv("DISPLAY") && (clipboard_run(xclip, text) || clipboard_run(xsel, text));
+#endif
+}
+
+static void share_invite(const char *host, const char *port, int copy)
+{
+    char address[INET_ADDRSTRLEN], command[512];
+    if (!host) {
+        if (!host_address(address)) {
+            snprintf(net.status, sizeof net.status, "No network IP found. Restart with --share-host HOST.");
+            fprintf(stderr, "%s\n", net.status);
+            return;
+        }
+        host = address;
+    }
+    snprintf(command, sizeof command,
+             "sh -c \"$(curl -fsSL https://raw.githubusercontent.com/pavelbohovin/tiny-chess/v" VERSION
+             "/install.sh)\" -- --join %s %s", host, port);
+    int copied = copy && clipboard_copy(command);
+    /* Print before entering the alternate screen so the invite is in scrollback. */
+    printf("Friend command%s:\n%s\n", copied ? " copied to clipboard" : " (copy manually)", command);
+    fflush(stdout);
+    snprintf(net.status, sizeof net.status, "%s %.32s:%s",
+             copied ? "Invite copied! Waiting at" : "Invite in scrollback. Waiting at", host, port);
 }
 
 static int nonblocking(int fd)
@@ -733,6 +846,10 @@ static void usage(void)
          "Friend (Black): ./tiny-chess --join HOST_IP 5555\n"
          "Both players need tiny-chess. Use a reachable IPv4 address or hostname.\n"
          "Use the same LAN, a VPN address, or forward the TCP port on your router.\n"
+         "Hosting copies an install-and-join command to your clipboard.\n"
+         "--share-host HOST: override the detected IP (VPN/public address).\n"
+         "--no-clipboard: print the invite without changing your clipboard.\n"
+         "--version: print the version.\n"
          "Click a piece, then its destination. Esc/right click cancels.\n"
          "Moves: e2 e4; promotion: e7 e8 q/r/b/n (default: queen).\n"
          "Castle: click king then g/c square, or type e1 g1/c1 (Black: rank 8).\n"
@@ -747,10 +864,19 @@ int main(int argc, char **argv)
               .message = "White: uppercase / hollow. Black: lowercase / filled." };
     for (wchar_t ch = L'♔'; ui.unicode && ch <= L'♟'; ++ch)
         ui.unicode = wcwidth(ch) == 1;
-    int side = 0;
-    const char *host = NULL, *port = "5555";
+    int side = 0, copy = 1;
+    const char *host = NULL, *port = "5555", *share_host = NULL;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--ascii")) ui.unicode = 0;
+        else if (!strcmp(argv[i], "--version")) { puts("tiny-chess " VERSION); return 0; }
+        else if (!strcmp(argv[i], "--no-clipboard")) copy = 0;
+        else if (!strcmp(argv[i], "--share-host")) {
+            if (++i == argc || !share_host_valid(argv[i])) {
+                fputs("--share-host needs an IPv4 address or hostname.\n", stderr);
+                return 1;
+            }
+            share_host = argv[i];
+        }
         else if (!side && (!strcmp(argv[i], "--host") || !strcmp(argv[i], "--join"))) {
             side = !strcmp(argv[i], "--host") ? 1 : -1;
             if (side == -1) {
@@ -763,6 +889,10 @@ int main(int argc, char **argv)
             usage();
             return strcmp(argv[i], "--help") != 0;
         }
+    }
+    if (share_host && side != 1) {
+        fputs("--share-host is only for --host games.\n", stderr);
+        return 1;
     }
     if (!*port || strlen(port) > 5 || strspn(port, "0123456789") != strlen(port) ||
         strtol(port, NULL, 10) < 1 || strtol(port, NULL, 10) > 65535) {
@@ -778,6 +908,7 @@ int main(int argc, char **argv)
     atexit(network_close);
     if (side) {
         if (!network_open(side, host, port)) return 1;
+        if (side == 1) share_invite(share_host, port, copy);
         ui.message = net.status;
     }
     const char *term = getenv("TERM");

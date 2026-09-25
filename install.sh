@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the matching release if absent, then run it with these arguments.
+# Install/update to this release if needed, then run with these arguments.
 set -eu
 
 install_dir=${TINY_CHESS_INSTALL_DIR:-"$HOME/.local/bin"}
@@ -40,7 +40,7 @@ install_game() (
     fi
 
     asset=tiny-chess-$platform-$arch
-    release=https://github.com/pavelbohovin/tiny-chess/releases/download/v1.1.0
+    release=https://github.com/pavelbohovin/tiny-chess/releases/download/v1.2.0
     mkdir -p "$install_dir"
     temp_dir=$(mktemp -d "$install_dir/.tiny-chess.XXXXXX")
     trap 'rm -rf "$temp_dir"' 0
@@ -64,7 +64,7 @@ install_game() (
     echo "Installed: $binary" >&2
 )
 
-if [ ! -x "$binary" ]; then
+if [ ! -x "$binary" ] || [ "$("$binary" --version 2>/dev/null || :)" != 'tiny-chess 1.2.0' ]; then
     install_game
 fi
 
