@@ -1,3 +1,6 @@
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#endif
 #define _XOPEN_SOURCE 700
 #include <ctype.h>
 #include <errno.h>
@@ -17,6 +20,11 @@
 #include <time.h>
 #include <unistd.h>
 #include <wchar.h>
+
+/* macOS uses a socket option on systems without the Linux send flag. */
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
 
 enum { PAWN = 1, KNIGHT, BISHOP, ROOK, QUEEN, KING };
 enum { WK = 1, WQ = 2, BK = 4, BQ = 8 };
@@ -359,6 +367,10 @@ static void network_close(void)
 
 static int nonblocking(int fd)
 {
+#ifdef SO_NOSIGPIPE
+    int yes = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, sizeof yes)) return 0;
+#endif
     int flags = fcntl(fd, F_GETFL);
     return flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
 }

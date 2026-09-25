@@ -1,0 +1,67 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      published:
+        description: Also test the published v1.1.0 installer and executable
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            asset: tiny-chess-linux-aarch64
+          - os: macos-15
+            asset: tiny-chess-macos-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build and test natively
+        run: |
+          uname -sm
+          test "$(uname -m)" = arm64 || test "$(uname -m)" = aarch64
+          make
+          make test
+          bytes=$(wc -c < tiny-chess)
+          echo "Executable size: $bytes bytes"
+          test "$bytes" -lt 524288
+          if [ "$(uname -s)" = Darwin ]; then
+            codesign --verify --strict tiny-chess
+            otool -L tiny-chess
+          fi
+      - name: Package executable
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          mkdir -p dist
+          cp tiny-chess "dist/$ASSET"
+          cd dist
+          shasum -a 256 "$ASSET" > SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Verify public install and play
+        if: inputs.published
+        run: |
+          export TINY_CHESS_INSTALL_DIR="$RUNNER_TEMP/tiny-chess-installed"
+          sh -c "$(curl -fsSL https://raw.githubusercontent.com/pavelbohovin/tiny-chess/v1.1.0/install.sh)" -- --install-only
+          export TINY_CHESS_TEST_BINARY="$TINY_CHESS_INSTALL_DIR/tiny-chess"
+          make test
